@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import {
   Search,
   SlidersHorizontal,
@@ -44,7 +44,7 @@ import {
   type PublishedIncident,
   type ReportType,
 } from "@/lib/herway";
-import { geocodeFn, routeFn, type GeoResult } from "@/lib/geo.functions";
+import { geocodeFn, type GeoResult } from "@/lib/geo.functions";
 import {
   analyzeRoute,
   type Analysis,
@@ -52,11 +52,14 @@ import {
   type PublicIncident,
 } from "@/lib/routeAnalysis";
 import { useAuth } from "@/hooks/use-auth";
+import { usePlaceSearch, type Place } from "@/hooks/use-place-search";
 import { cn } from "@/lib/utils";
+import { PlaceCombobox } from "@/components/map/PlaceCombobox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -100,8 +103,11 @@ function toPublicIncident(i: PublishedIncident): PublicIncident {
   };
 }
 
+const EMPTY_INCIDENTS: PublishedIncident[] = [];
+const EMPTY_SOURCES: Array<{ id: string; last_success_at: string | null }> = [];
+
 function Explore() {
-  const { data: incidents = [], isLoading, isError, refetch } = useQuery({
+  const { data: incidents = EMPTY_INCIDENTS, isLoading, isError, refetch } = useQuery({
     queryKey: ["published_incidents"],
     queryFn: async () => {
       const { data, error } = await supabase
@@ -113,7 +119,7 @@ function Explore() {
     },
   });
 
-  const { data: sources = [] } = useQuery({
+  const { data: sources = EMPTY_SOURCES } = useQuery({
     queryKey: ["sources_stale_check"],
     queryFn: async () => {
       try {
@@ -145,6 +151,17 @@ function Explore() {
   const [center, setCenter] = useState({ lat: 23.7, lng: 90.4 });
   const [showFilters, setShowFilters] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("map");
+
+  const handleViewChange = useCallback((ids: string[], c: { lat: number; lng: number }) => {
+    setVisible((prev) => {
+      if (prev.length === ids.length && prev.every((id, idx) => id === ids[idx])) return prev;
+      return ids;
+    });
+    setCenter((prev) => {
+      if (Math.abs(prev.lat - c.lat) < 0.0001 && Math.abs(prev.lng - c.lng) < 0.0001) return prev;
+      return c;
+    });
+  }, []);
   const [tabMode, setTabMode] = useState<TabMode>("search");
 
   // Routing state
@@ -160,6 +177,71 @@ function Explore() {
   const [routingLoading, setRoutingLoading] = useState(false);
   const [routingError, setRoutingError] = useState<string | null>(null);
   const [fitRouteTrigger, setFitRouteTrigger] = useState(0);
+  const [routeMode, setRouteMode] = useState<"walk" | "drive" | "cycle">("walk");
+
+  // Map layer state (for Layers popover, remembered in localStorage)
+  const [basemap, setBasemap] = useState<"standard" | "light" | "dark" | "auto">(() => {
+    try {
+      return (localStorage.getItem("herway-basemap") as any) || "auto";
+    } catch {
+      return "auto";
+    }
+  });
+  const [showIncidents, setShowIncidents] = useState(() => {
+    try {
+      const v = localStorage.getItem("herway-layer-incidents");
+      return v !== null ? v === "true" : true;
+    } catch {
+      return true;
+    }
+  });
+  const [showHelpPoints, setShowHelpPoints] = useState(() => {
+    try {
+      return localStorage.getItem("herway-layer-help") === "true";
+    } catch {
+      return false;
+    }
+  });
+  const [show3DBuildings, setShow3DBuildings] = useState(() => {
+    try {
+      return localStorage.getItem("herway-layer-3d") === "true";
+    } catch {
+      return false;
+    }
+  });
+  const [showTransit, setShowTransit] = useState(() => {
+    try {
+      const v = localStorage.getItem("herway-layer-transit");
+      return v !== null ? v === "true" : true;
+    } catch {
+      return true;
+    }
+  });
+  const [showLabels, setShowLabels] = useState(() => {
+    try {
+      const v = localStorage.getItem("herway-layer-labels");
+      return v !== null ? v === "true" : true;
+    } catch {
+      return true;
+    }
+  });
+
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchMarker, setSearchMarker] = useState<{ lat: number; lng: number; label?: string } | null>(null);
+
+  // Source filter chip (Phase 3a #8)
+  const [sourceFilter, setSourceFilter] = useState<"all" | "community" | "official" | "news" | "ngo">("all");
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("herway-basemap", basemap);
+      localStorage.setItem("herway-layer-incidents", String(showIncidents));
+      localStorage.setItem("herway-layer-help", String(showHelpPoints));
+      localStorage.setItem("herway-layer-3d", String(show3DBuildings));
+      localStorage.setItem("herway-layer-transit", String(showTransit));
+      localStorage.setItem("herway-layer-labels", String(showLabels));
+    } catch {}
+  }, [basemap, showIncidents, showHelpPoints, show3DBuildings, showTransit, showLabels]);
 
   // Analysis settings
   const [radiusM, setRadiusM] = useState(500); // 200m - 1000m slider
@@ -229,7 +311,7 @@ function Explore() {
     }
   }
 
-  // Calculate route
+  // Calculate route via nav edge function (hides ORS key, supports Walk/Drive/Cycle)
   async function calculateRoute() {
     if (!fromPoint || !toPoint) {
       setRoutingError("Please enter both an origin and destination.");
@@ -238,40 +320,52 @@ function Explore() {
     setRoutingLoading(true);
     setRoutingError(null);
     try {
-      const res = await routeFn({
-        data: {
-          fromLng: fromPoint.lng,
-          fromLat: fromPoint.lat,
-          toLng: toPoint.lng,
-          toLat: toPoint.lat,
+      const { data, error: fnError } = await supabase.functions.invoke("nav", {
+        body: {
+          action: "route",
+          from: { lat: fromPoint.lat, lng: fromPoint.lng },
+          to: { lat: toPoint.lat, lng: toPoint.lng },
+          mode: routeMode,
         },
       });
 
-      if (res.error) {
+      if (fnError) {
         setRoutes([]);
-        if (res.error === "routing_not_configured") {
-          setRoutingError("Routing service is not configured (OSRM_BASE_URL missing).");
-        } else if (res.error === "outside_supported_area") {
-          setRoutingError("Location is outside supported Bangladesh boundaries.");
-        } else if (res.error === "rate_limited") {
-          setRoutingError("Service is temporarily rate-limited. Please wait a moment and try again.");
-        } else if (res.error === "timeout") {
-          setRoutingError("Request timed out. Please try again.");
-        } else if (res.error === "no_route") {
-          setRoutingError("No driving route found between these locations.");
-        } else {
-          setRoutingError("Route could not be calculated.");
+        setRoutingError("Route could not be calculated. Check your connection and try again.");
+        return;
+      }
+
+      if (data?.error) {
+        setRoutes([]);
+        switch (data.error) {
+          case "routing_not_configured":
+            setRoutingError("Route planning is not set up yet.");
+            break;
+          case "outside_supported_area":
+            setRoutingError("One or both locations are outside Bangladesh.");
+            break;
+          case "rate_limited":
+            setRoutingError("Routing service is temporarily busy. Please wait a moment and try again.");
+            break;
+          case "timeout":
+            setRoutingError("Request timed out. Please try again.");
+            break;
+          case "no_route":
+            setRoutingError("No route found between these locations.");
+            break;
+          default:
+            setRoutingError("Route could not be calculated.");
         }
         return;
       }
 
-      if (!res.routes || res.routes.length === 0) {
+      if (!data?.routes?.length) {
         setRoutes([]);
         setRoutingError("Route could not be calculated.");
         return;
       }
 
-      setRoutes(res.routes);
+      setRoutes(data.routes);
       setSelectedRouteIdx(0);
       setFitRouteTrigger((k) => k + 1);
     } catch {
@@ -348,11 +442,18 @@ function Explore() {
           selectedId={selectedId}
           onSelect={setSelectedId}
           flyTo={flyTo}
-          onViewChange={(ids, c) => { setVisible(ids); setCenter(c); }}
+          searchMarker={searchMarker}
+          onViewChange={handleViewChange}
           routeCoordinates={activeRoute?.coordinates ?? null}
           fitRouteTrigger={fitRouteTrigger}
           pickingLocation={pickMode !== null}
           onMapClick={handleMapClick}
+          basemap={basemap}
+          showIncidents={showIncidents}
+          showHelpPoints={showHelpPoints}
+          show3DBuildings={show3DBuildings}
+          showTransit={showTransit}
+          showLabels={showLabels}
         />
 
         {/* ── TOP-LEFT FLOATING CARD: SEARCH & ROUTE PLANNING ── */}
@@ -419,23 +520,77 @@ function Explore() {
                   )}
                 </button>
 
-                {/* Small Map Info Popover (closed by default) */}
+                {/* Layers popover (Phase 3a #1) */}
                 <Popover>
                   <PopoverTrigger asChild>
                     <button
-                      aria-label="Map information and legend"
+                      aria-label="Map layers and legend"
+                      title="Map layers and legend"
                       className="grid size-8 place-items-center rounded-lg border hover:bg-muted text-muted-foreground hover:text-foreground"
                     >
-                      <Info className="size-3.5" />
+                      <Layers className="size-3.5" />
                     </button>
                   </PopoverTrigger>
-                  <PopoverContent align="end" className="w-72 space-y-3 p-4 text-xs">
+                  <PopoverContent align="end" className="w-80 space-y-3.5 p-4 text-xs">
                     <div>
-                      <h4 className="font-semibold text-foreground">Map Information</h4>
-                      <p className="mt-1 text-muted-foreground leading-relaxed">{DISCLAIMER}</p>
+                      <h4 className="font-semibold text-foreground text-sm">Map Layers</h4>
+                      <p className="text-[11px] text-muted-foreground">Adjust style, visibility and POIs</p>
                     </div>
-                    <div className="space-y-1.5 border-t pt-2">
-                      <p className="font-medium text-foreground">Category Legend</p>
+
+                    {/* Basemap selection */}
+                    <div className="space-y-1.5 border-t pt-2.5">
+                      <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block">
+                        Basemap
+                      </label>
+                      <div className="grid grid-cols-4 gap-1">
+                        {(["standard", "light", "dark", "auto"] as const).map((b) => (
+                          <button
+                            key={b}
+                            type="button"
+                            onClick={() => setBasemap(b)}
+                            className={cn(
+                              "rounded-lg border py-1.5 text-center text-xs font-medium capitalize transition",
+                              basemap === b
+                                ? "border-primary bg-primary text-primary-foreground font-semibold"
+                                : "bg-card hover:bg-muted text-muted-foreground",
+                            )}
+                          >
+                            {b}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Layer Toggles */}
+                    <div className="space-y-2 border-t pt-2.5">
+                      <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block">
+                        Features & Overlays
+                      </label>
+                      <div className="flex items-center justify-between">
+                        <span>Incident reports</span>
+                        <Switch checked={showIncidents} onCheckedChange={setShowIncidents} />
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span>Help points (police, hospital, clinic)</span>
+                        <Switch checked={showHelpPoints} onCheckedChange={setShowHelpPoints} />
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span>3D buildings</span>
+                        <Switch checked={show3DBuildings} onCheckedChange={setShow3DBuildings} />
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span>Transit lines</span>
+                        <Switch checked={showTransit} onCheckedChange={setShowTransit} />
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span>Labels & names</span>
+                        <Switch checked={showLabels} onCheckedChange={setShowLabels} />
+                      </div>
+                    </div>
+
+                    {/* Legend inside popover (Phase 3a #1 & Phase 3c) */}
+                    <div className="space-y-1.5 border-t pt-2.5">
+                      <p className="font-semibold text-foreground">Incident Legend</p>
                       {CATEGORIES.map((c) => (
                         <div key={c.value} className="flex items-center gap-2">
                           <span
@@ -445,10 +600,13 @@ function Explore() {
                           <span className="text-muted-foreground">{c.label}</span>
                         </div>
                       ))}
-                      <div className="flex items-center gap-2 pt-1 text-muted-foreground">
-                        <span className="inline-block size-2.5 rounded-full border border-dashed border-muted-foreground/60 bg-transparent" />
-                        <span>Faded marker = approximate area</span>
+                      <div className="flex items-center gap-2 pt-1 text-muted-foreground text-[11px]">
+                        <span className="inline-block size-3 rounded-full border border-dashed border-primary/60 bg-primary/10" />
+                        <span>Circle = approximate area (about 150 m), not an exact spot</span>
                       </div>
+                      <p className="mt-2 text-[10px] text-muted-foreground leading-relaxed">
+                        {DISCLAIMER}
+                      </p>
                     </div>
                   </PopoverContent>
                 </Popover>
@@ -459,14 +617,40 @@ function Explore() {
             <div className="mt-3">
               {tabMode === "search" ? (
                 <div>
-                  <PlaceSearchInput
-                    onPick={(p) => setFlyTo({ ...p, zoom: 14.5, key: Date.now() })}
+                  <PlaceCombobox
+                    value={searchQuery}
+                    onChange={setSearchQuery}
+                    onPick={(p) => {
+                      setSearchMarker(p);
+                      setFlyTo({ lat: p.lat, lng: p.lng, zoom: 14.5, key: Date.now() });
+                    }}
+                    onClear={() => setSearchMarker(null)}
+                    centerBias={center}
                     placeholder="Search area, road or landmark in Bangladesh"
                   />
                 </div>
               ) : (
                 /* Plan Route Controls */
                 <div className="space-y-2.5">
+                  {/* Transport mode chips */}
+                  <div className="flex gap-1.5">
+                    {(["walk", "drive", "cycle"] as const).map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => { setRouteMode(m); setRoutes([]); setRoutingError(null); }}
+                        className={cn(
+                          "flex-1 rounded-lg border py-1 text-[11px] font-semibold transition capitalize",
+                          routeMode === m
+                            ? "border-primary bg-primary text-primary-foreground"
+                            : "bg-card hover:bg-muted text-muted-foreground",
+                        )}
+                      >
+                        {m === "walk" ? "🚶 Walk" : m === "drive" ? "🚗 Drive" : "🚴 Cycle"}
+                      </button>
+                    ))}
+                  </div>
+
                   {pickMode && (
                     <div className="rounded-lg bg-primary/10 px-3 py-2 text-xs font-medium text-primary">
                       Click anywhere on the map to set <strong>{pickMode === "from" ? "Origin" : "Destination"}</strong>.
@@ -475,7 +659,7 @@ function Explore() {
 
                   <div className="relative space-y-1.5">
                     {/* From Input */}
-                    <RoutePointInput
+                    <PlaceCombobox
                       label="From"
                       value={fromQuery}
                       onChange={setFromQuery}
@@ -483,6 +667,8 @@ function Explore() {
                       onClear={() => { setFromPoint(null); setFromQuery(""); }}
                       onPickMap={() => setPickMode(pickMode === "from" ? null : "from")}
                       isPicking={pickMode === "from"}
+                      showUseMyLocation={true}
+                      centerBias={center}
                       placeholder="Start point or address"
                     />
 
@@ -500,7 +686,7 @@ function Explore() {
                     </div>
 
                     {/* To Input */}
-                    <RoutePointInput
+                    <PlaceCombobox
                       label="To"
                       value={toQuery}
                       onChange={setToQuery}
@@ -508,6 +694,8 @@ function Explore() {
                       onClear={() => { setToPoint(null); setToQuery(""); }}
                       onPickMap={() => setPickMode(pickMode === "to" ? null : "to")}
                       isPicking={pickMode === "to"}
+                      showUseMyLocation={false}
+                      centerBias={center}
                       placeholder="Destination"
                     />
                   </div>
@@ -522,11 +710,11 @@ function Explore() {
                     >
                       {routingLoading ? (
                         <>
-                          <Loader2 className="mr-1.5 size-3.5 animate-spin" /> Calculating route…
+                          <Loader2 className="mr-1.5 size-3.5 animate-spin" /> Calculating…
                         </>
                       ) : (
                         <>
-                          <Navigation className="mr-1.5 size-3.5" /> Route
+                          <Navigation className="mr-1.5 size-3.5" /> Get route
                         </>
                       )}
                     </Button>
@@ -561,43 +749,46 @@ function Explore() {
                   )}
 
                   {/* Route Summary & Alternatives */}
-                  {routes.length > 0 && activeRoute && (
-                    <div className="space-y-2 border-t pt-2.5 text-xs">
-                      {/* Alternatives chips */}
-                      {routes.length > 1 && (
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-muted-foreground font-medium">Options:</span>
-                          {routes.map((_, idx) => (
-                            <button
-                              key={idx}
-                              onClick={() => setSelectedRouteIdx(idx)}
-                              className={cn(
-                                "rounded-md px-2 py-0.5 font-medium transition",
-                                selectedRouteIdx === idx
-                                  ? "bg-primary text-primary-foreground"
-                                  : "bg-muted text-muted-foreground hover:bg-muted/80",
-                              )}
-                            >
-                              Route {idx + 1}
-                            </button>
-                          ))}
-                        </div>
-                      )}
+                  {routes.length > 0 && activeRoute && (() => {
+                    const modeLabel = routeMode === "walk" ? "Walking" : routeMode === "drive" ? "Driving" : "Cycling";
+                    const km = (activeRoute.distance_m / 1000).toFixed(1);
+                    const min = Math.round(activeRoute.duration_s / 60);
+                    return (
+                      <div className="space-y-2 border-t pt-2.5 text-xs">
+                        {/* Alternatives chips */}
+                        {routes.length > 1 && (
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-muted-foreground font-medium">Options:</span>
+                            {routes.map((_, idx) => (
+                              <button
+                                key={idx}
+                                onClick={() => setSelectedRouteIdx(idx)}
+                                className={cn(
+                                  "rounded-md px-2 py-0.5 font-medium transition",
+                                  selectedRouteIdx === idx
+                                    ? "bg-primary text-primary-foreground"
+                                    : "bg-muted text-muted-foreground hover:bg-muted/80",
+                                )}
+                              >
+                                Route {idx + 1}
+                              </button>
+                            ))}
+                          </div>
+                        )}
 
-                      {/* Distance & Duration */}
-                      <div className="flex items-center justify-between font-medium">
-                        <span className="text-foreground">
-                          {(activeRoute.distance_m / 1000).toFixed(1)} km · {Math.round(activeRoute.duration_s / 60)} min
-                        </span>
-                        <span className="rounded-md bg-secondary px-2 py-0.5 text-[11px] text-secondary-foreground font-semibold">
-                          driving route
-                        </span>
+                        {/* Distance & Duration — from response only, no estimates */}
+                        <div className="font-semibold text-foreground">
+                          {modeLabel} route · {km} km · {min} min
+                        </div>
+                        <p className="text-[11px] text-muted-foreground">
+                          Routing quality depends on OpenStreetMap coverage in the area.
+                        </p>
+                        <p className="text-[11px] text-muted-foreground border-t pt-1.5">
+                          Routing © openrouteservice.org, data © OpenStreetMap contributors
+                        </p>
                       </div>
-                      <p className="text-[11px] text-muted-foreground">
-                        Note: Driving route shown. Walking and rickshaw routing is not available yet.
-                      </p>
-                    </div>
-                  )}
+                    );
+                  })()}
                 </div>
               )}
             </div>
@@ -821,7 +1012,7 @@ function Explore() {
           <div className="mx-auto max-w-2xl">
             <div className="flex items-center justify-between pb-4">
               <div>
-                <h2 className="text-xl font-bold">Published Incidents</h2>
+                <h2 className="text-xl font-bold">Reports in this view</h2>
                 <p className="text-xs text-muted-foreground">Sorted by incident date</p>
               </div>
               <Button size="sm" variant="outline" onClick={() => setViewMode("map")}>
@@ -837,10 +1028,12 @@ function Explore() {
                 </p>
               </div>
             ) : (
-              <div className="space-y-3">
+              <div className="space-y-3" role="list" aria-label="Reports in this view">
                 {sortedForList.map((item) => (
                   <button
                     key={item.id}
+                    role="listitem"
+                    tabIndex={0}
                     onClick={() => {
                       setSelectedId(item.id);
                       setViewMode("map");
@@ -848,7 +1041,7 @@ function Explore() {
                         setFlyTo({ lat: item.lat, lng: item.lng, zoom: 14, key: Date.now() });
                       }
                     }}
-                    className="w-full rounded-2xl border bg-card p-4 text-left transition hover:border-primary"
+                    className="w-full rounded-2xl border bg-card p-4 text-left transition hover:border-primary focus:outline-none focus:ring-2 focus:ring-primary"
                   >
                     <div className="flex items-start justify-between gap-2">
                       <CategoryBadge category={item.category} />
@@ -896,191 +1089,17 @@ export function PlaceSearch({
   onPick: (p: { label: string; lat: number; lng: number }) => void;
   placeholder?: string;
 }) {
-  return <PlaceSearchInput onPick={onPick} placeholder={placeholder} />;
-}
-
-export function PlaceSearchInput({
-  onPick,
-  placeholder,
-}: {
-  onPick: (p: { label: string; lat: number; lng: number }) => void;
-  placeholder: string;
-}) {
-  const [q, setQ] = useState("");
-  const [results, setResults] = useState<GeoResult[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [open, setOpen] = useState(false);
-
-  useEffect(() => {
-    if (q.trim().length < 3) {
-      setResults([]);
-      return;
-    }
-    setLoading(true);
-    const t = setTimeout(async () => {
-      try {
-        const res = await geocodeFn({ data: { q } });
-        setResults(res.results ?? []);
-      } catch {
-        setResults([]);
-      } finally {
-        setLoading(false);
-      }
-    }, 400);
-
-    return () => clearTimeout(t);
-  }, [q]);
-
+  const [val, setVal] = useState("");
   return (
-    <div className="relative">
-      <div className="relative flex items-center">
-        <Search className="pointer-events-none absolute left-3 size-4 text-muted-foreground" />
-        <input
-          value={q}
-          onChange={(e) => {
-            setQ(e.target.value);
-            setOpen(true);
-          }}
-          onFocus={() => setOpen(true)}
-          placeholder={placeholder}
-          aria-label="Search place"
-          className="h-10 w-full rounded-xl border bg-background pl-9 pr-8 text-xs outline-none focus:ring-2 focus:ring-primary"
-        />
-        {q && (
-          <button
-            onClick={() => {
-              setQ("");
-              setResults([]);
-            }}
-            className="absolute right-2.5 text-muted-foreground hover:text-foreground"
-          >
-            <X className="size-3.5" />
-          </button>
-        )}
-      </div>
-
-      {open && results.length > 0 && (
-        <ul className="absolute inset-x-0 top-12 z-40 max-h-56 overflow-y-auto rounded-xl border bg-popover p-1 shadow-float">
-          {results.map((r, i) => (
-            <li key={i}>
-              <button
-                type="button"
-                className="w-full rounded-lg px-3 py-2 text-left text-xs hover:bg-muted"
-                onClick={() => {
-                  onPick({ label: r.name, lat: r.lat, lng: r.lng });
-                  setQ(r.name);
-                  setOpen(false);
-                }}
-              >
-                {r.name}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
+    <PlaceCombobox
+      value={val}
+      onChange={setVal}
+      onPick={(p) => onPick({ label: p.name, lat: p.lat, lng: p.lng })}
+      placeholder={placeholder}
+    />
   );
 }
 
-function RoutePointInput({
-  label,
-  value,
-  onChange,
-  onPick,
-  onClear,
-  onPickMap,
-  isPicking,
-  placeholder,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  onPick: (p: { name: string; lat: number; lng: number }) => void;
-  onClear: () => void;
-  onPickMap: () => void;
-  isPicking: boolean;
-  placeholder: string;
-}) {
-  const [results, setResults] = useState<GeoResult[]>([]);
-  const [open, setOpen] = useState(false);
-
-  useEffect(() => {
-    if (value.trim().length < 3) {
-      setResults([]);
-      return;
-    }
-    const t = setTimeout(async () => {
-      try {
-        const res = await geocodeFn({ data: { q: value } });
-        setResults(res.results ?? []);
-      } catch {
-        setResults([]);
-      }
-    }, 400);
-
-    return () => clearTimeout(t);
-  }, [value]);
-
-  return (
-    <div className="relative">
-      <div className="flex items-center gap-1.5">
-        <span className="w-9 text-[11px] font-semibold text-muted-foreground">{label}</span>
-        <div className="relative flex-1">
-          <input
-            value={value}
-            onChange={(e) => {
-              onChange(e.target.value);
-              setOpen(true);
-            }}
-            onFocus={() => setOpen(true)}
-            placeholder={placeholder}
-            className="h-9 w-full rounded-lg border bg-background pl-2.5 pr-7 text-xs outline-none focus:ring-1 focus:ring-primary"
-          />
-          {value && (
-            <button
-              type="button"
-              onClick={onClear}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-            >
-              <X className="size-3" />
-            </button>
-          )}
-        </div>
-        <button
-          type="button"
-          onClick={onPickMap}
-          title="Pick point on map"
-          aria-label={`Pick ${label} on map`}
-          className={cn(
-            "grid size-9 shrink-0 place-items-center rounded-lg border transition",
-            isPicking ? "border-primary bg-primary text-primary-foreground" : "hover:bg-muted text-muted-foreground",
-          )}
-        >
-          <LocateFixed className="size-4" />
-        </button>
-      </div>
-
-      {open && results.length > 0 && (
-        <ul className="absolute inset-x-0 top-11 z-40 max-h-48 overflow-y-auto rounded-xl border bg-popover p-1 shadow-float">
-          {results.map((r, i) => (
-            <li key={i}>
-              <button
-                type="button"
-                className="w-full rounded-lg px-2.5 py-1.5 text-left text-xs hover:bg-muted"
-                onClick={() => {
-                  onPick(r);
-                  setOpen(false);
-                }}
-              >
-                {r.name}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}
 
 // ── INCIDENT DRAWER (Right-side on Desktop, Bottom sheet on Mobile <768px) ──
 

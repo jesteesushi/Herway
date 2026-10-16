@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useState, type ComponentProps } from "react";
+import "maplibre-gl/dist/maplibre-gl.css";
 
 const IncidentMapLazy = lazy(() => import("./map/IncidentMap"));
 const LocationPickerLazy = lazy(() => import("./map/LocationPicker"));
@@ -10,7 +11,7 @@ function useMounted() {
 }
 
 const Fallback = () => (
-  <div className="absolute inset-0 grid place-items-center bg-muted text-sm text-muted-foreground">Loading map…</div>
+  <div className="absolute inset-0 grid place-items-center bg-muted/60 text-sm text-muted-foreground">Loading map…</div>
 );
 
 export function IncidentMap(props: ComponentProps<typeof IncidentMapLazy>) {

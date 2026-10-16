@@ -234,7 +234,7 @@ function MessagesPage() {
         <p className="mt-2 text-sm text-muted-foreground">
           HerWay messages are pseudonymous and protected. Please sign in or create a pseudonymous account to chat.
         </p>
-        <Link to="/auth" search={{ next: "/messages" }} className="mt-6 inline-block rounded-full bg-primary px-6 py-2.5 text-sm font-semibold text-primary-foreground">
+        <Link to="/login" search={{ redirect: "/messages" }} className="mt-6 inline-block rounded-full bg-primary px-6 py-2.5 text-sm font-semibold text-primary-foreground">
           Sign In
         </Link>
       </PageContainer>

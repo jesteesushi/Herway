@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/route'
 import { Route as AuthRouteImport } from './routes/auth'
 import { Route as GuidelinesRouteImport } from './routes/guidelines'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as MessagesRouteImport } from './routes/messages'
 import { Route as SourcesRouteImport } from './routes/sources'
 import { Route as StatusesRouteImport } from './routes/statuses'
@@ -43,6 +44,11 @@ const AuthRoute = AuthRouteImport.update({
 const GuidelinesRoute = GuidelinesRouteImport.update({
   id: '/guidelines',
   path: '/guidelines',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
 const MessagesRoute = MessagesRouteImport.update({
@@ -115,6 +121,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
   '/guidelines': typeof GuidelinesRoute
+  '/login': typeof LoginRoute
   '/messages': typeof MessagesRoute
   '/sources': typeof SourcesRoute
   '/statuses': typeof StatusesRoute
@@ -132,6 +139,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
   '/guidelines': typeof GuidelinesRoute
+  '/login': typeof LoginRoute
   '/messages': typeof MessagesRoute
   '/sources': typeof SourcesRoute
   '/statuses': typeof StatusesRoute
@@ -151,6 +159,7 @@ export interface FileRoutesById {
   '/_authenticated': typeof AuthenticatedRouteRouteWithChildren
   '/auth': typeof AuthRoute
   '/guidelines': typeof GuidelinesRoute
+  '/login': typeof LoginRoute
   '/messages': typeof MessagesRoute
   '/sources': typeof SourcesRoute
   '/statuses': typeof StatusesRoute
@@ -170,6 +179,7 @@ export interface FileRouteTypes {
     | '/'
     | '/auth'
     | '/guidelines'
+    | '/login'
     | '/messages'
     | '/sources'
     | '/statuses'
@@ -187,6 +197,7 @@ export interface FileRouteTypes {
     | '/'
     | '/auth'
     | '/guidelines'
+    | '/login'
     | '/messages'
     | '/sources'
     | '/statuses'
@@ -205,6 +216,7 @@ export interface FileRouteTypes {
     | '/_authenticated'
     | '/auth'
     | '/guidelines'
+    | '/login'
     | '/messages'
     | '/sources'
     | '/statuses'
@@ -224,6 +236,7 @@ export interface RootRouteChildren {
   AuthenticatedRouteRoute: typeof AuthenticatedRouteRouteWithChildren
   AuthRoute: typeof AuthRoute
   GuidelinesRoute: typeof GuidelinesRoute
+  LoginRoute: typeof LoginRoute
   MessagesRoute: typeof MessagesRoute
   SourcesRoute: typeof SourcesRoute
   StatusesRoute: typeof StatusesRoute
@@ -258,6 +271,13 @@ declare module '@tanstack/react-router' {
       path: '/guidelines'
       fullPath: '/guidelines'
       preLoaderRoute: typeof GuidelinesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/messages': {
@@ -377,6 +397,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuthenticatedRouteRoute: AuthenticatedRouteRouteWithChildren,
   AuthRoute: AuthRoute,
   GuidelinesRoute: GuidelinesRoute,
+  LoginRoute: LoginRoute,
   MessagesRoute: MessagesRoute,
   SourcesRoute: SourcesRoute,
   StatusesRoute: StatusesRoute,
