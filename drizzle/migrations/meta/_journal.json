@@ -1,0 +1,34 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1790971592432,
+      "tag": "0000_herway_phase1",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1791337928287,
+      "tag": "0001_herway_community",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791400000000,
+      "tag": "0002_herway_moderation_security",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1791500000000,
+      "tag": "0003_herway_complete_features",
+      "breakpoints": true
+    }
+  ]
+}
